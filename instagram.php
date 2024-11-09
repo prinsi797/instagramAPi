@@ -1,11 +1,49 @@
 <?php
 header('Content-Type: application/json');
+header('Access-Control-Allow-Origin: *');
+header('Access-Control-Allow-Methods: GET, POST');
+header('Access-Control-Allow-Headers: Content-Type');
+
 
 // Enable error logging for debugging in the live environment
 ini_set('display_errors', 1);
 ini_set('log_errors', 1);
 error_reporting(E_ALL);
 
+function deleteOldFiles($directory) {
+    $files = glob($directory . '*'); // Get all files in the directory
+
+    foreach ($files as $file) {
+        if (is_file($file)) {
+            unlink($file); // Delete the file
+        }
+    }
+}
+
+// Call the function to delete old files in the 'downloads' folder
+$downloadsDir = __DIR__ . '/../downloads/';
+deleteOldFiles($downloadsDir);
+
+function proxyDownload($url) {
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+    curl_setopt($ch, CURLOPT_HTTPHEADER, [
+        'Accept: */*',
+        'Accept-Language: en-US,en;q=0.5',
+        'Referer: https://www.instagram.com/'
+    ]);
+    
+    $content = curl_exec($ch);
+    $contentType = curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
+    curl_close($ch);
+    
+    header('Content-Type: ' . $contentType);
+    echo $content;
+    exit;
+}
 // Function to encode request data for the POST request
 function encodePostRequestData($shortcode) {
     $requestData = [
@@ -151,9 +189,17 @@ function downloadFile($url) {
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
     curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
     curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+     curl_setopt($ch, CURLOPT_HTTPHEADER, [
+        'Accept: */*',
+        'Accept-Language: en-US,en;q=0.5',
+        'Referer: https://www.instagram.com/'
+    ]);
     $fileContent = curl_exec($ch);
     curl_close($ch);
     return $fileContent;
+    // $fileContent = curl_exec($ch);
+    // curl_close($ch);
+    // return $fileContent;
 }
 
 // Function to download files and create ZIP
@@ -209,7 +255,9 @@ function downloadAndCreateZip($mediaUrls) {
 
 
 // Main handler function for API request
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['proxy_url'])) {
+    proxyDownload($_GET['proxy_url']);
+} elseif ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $input = json_decode(file_get_contents('php://input'), true);
     $postUrl = $input['postUrl'] ?? '';
 
@@ -219,23 +267,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         echo json_encode($mediaInfo);
         exit;
     }
-//   if ($mediaInfo['type'] === 'carousel') {
-//     // Create a ZIP for carousel posts
-//     $zipResult = downloadAndCreateZip($mediaInfo['media']);
+  if ($mediaInfo['type'] === 'carousel') {
+    // Create a ZIP for carousel posts
+    $zipResult = downloadAndCreateZip($mediaInfo['media']);
     
-//     // Make sure the response doesn't contain nested zipFilePath
-//     if (isset($zipResult['zipFilePath'])) {
-//         echo json_encode([
-//             'zipFilePath' => $zipResult['zipFilePath'],  // Directly access zipFilePath
-//         ]);
-//     } else {
-//         echo json_encode($zipResult);  // In case there's an error or missing zipFilePath
-//     }
-    if ($mediaInfo['type'] === 'carousel') {
-        // Return multiple media URLs
+    // Make sure the response doesn't contain nested zipFilePath
+    if (isset($zipResult['zipFilePath'])) {
         echo json_encode([
-            'mediaUrls' => $mediaInfo['media'],  // Multiple media URLs in an array
+            'zipFilePath' => $zipResult['zipFilePath'],  // Directly access zipFilePath
         ]);
+    } else {
+        echo json_encode($zipResult);  // In case there's an error or missing zipFilePath
+    }
+    // if ($mediaInfo['type'] === 'carousel') {
+    //     // Return multiple media URLs
+    //     echo json_encode([
+    //         'mediaUrls' => $mediaInfo['media'],  // Multiple media URLs in an array
+    //     ]);
 } else {
     echo json_encode([
         'fileUrl' => $mediaInfo['url'],
