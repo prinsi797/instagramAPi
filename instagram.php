@@ -4,10 +4,10 @@ header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, POST');
 header('Access-Control-Allow-Headers: Content-Type');
 
-
 // Enable error logging for debugging in the live environment
 ini_set('display_errors', 1);
 ini_set('log_errors', 1);
+ini_set('error_log', __DIR__ . '/error.log');
 error_reporting(E_ALL);
 
 function deleteOldFiles($directory) {
@@ -20,10 +20,83 @@ function deleteOldFiles($directory) {
     }
 }
 
+function detectUrlType($url) {
+    if (strpos($url, 'instagram.com') !== false) {
+        return 'instagram';
+    } elseif (strpos($url, 'youtube.com/shorts') !== false || strpos($url, 'youtu.be') !== false || strpos($url, 'youtube.com/watch?v=') !== false) {
+        return 'youtube';
+    }
+    return 'unknown';
+}
 // Call the function to delete old files in the 'downloads' folder
 $downloadsDir = __DIR__ . '/../downloads/';
 deleteOldFiles($downloadsDir);
 
+function isValidYoutubeUrl($url) {
+    $regex = "/^(https?:\/\/)?(www\.)?(youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})/";
+    return preg_match($regex, $url);
+}
+
+/**
+ * Extract the video ID from YouTube URL
+ */
+function extractVideoId($url) {
+    $regex = "/(?:youtube\.com\/(?:shorts\/|watch\?v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})/";
+    preg_match($regex, $url, $matches);
+    return $matches[1] ?? null;  // Return the videoId if found, else null
+}
+/**
+ * Fetches video details from RapidAPI
+ */
+function fetchYoutubeVideoDetails($videoId) {
+    if (empty($videoId)) {
+        return ["error" => true, "message" => "Video ID is missing"];
+    }
+    $apiUrl = "https://youtube-media-downloader.p.rapidapi.com/v2/video/details?videoId=" . urlencode($videoId);
+    $curl = curl_init();
+    curl_setopt_array($curl, [
+        CURLOPT_URL => $apiUrl,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_ENCODING => "",
+        CURLOPT_MAXREDIRS => 10,
+        CURLOPT_TIMEOUT => 30,
+        CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+        CURLOPT_CUSTOMREQUEST => "GET",
+        CURLOPT_HTTPHEADER => [
+            "x-rapidapi-host: youtube-media-downloader.p.rapidapi.com",
+            "x-rapidapi-key: 9da3e28b24mshe036d02fec5c810p112321jsn4f98d6601eb5" // अपनी RapidAPI कुंजी यहाँ डालें
+        ],
+    ]);
+
+    $response = curl_exec($curl);
+    $err = curl_error($curl);
+
+    curl_close($curl);
+
+    if ($err) {
+        return ["error" => true, "message" => "cURL Error: " . $err];
+    }
+
+    // कच्ची प्रतिक्रिया को लॉग करें
+    error_log("Raw API Response: " . $response); // कच्ची प्रतिक्रिया लॉग करें
+
+    $decodedResponse = json_decode($response, true);
+
+    if (isset($decodedResponse['status']) && $decodedResponse['status'] === 'error') {
+        return ["error" => true, "message" => $decodedResponse['message']];
+    }
+
+    return [
+        "error" => false,
+        "data" => [
+            "title" => $decodedResponse['title'] ?? "Unknown",
+            "duration" => $decodedResponse['duration'] ?? "Unknown",
+            "views" => $decodedResponse['views'] ?? "Unknown",
+            "thumbnail" => $decodedResponse['thumbnails'][0]['url'] ?? "",
+            "downloadLinks" => $decodedResponse['videos'] ?? []
+        ]
+    ];
+}
 function proxyDownload($url) {
     $ch = curl_init($url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
@@ -44,6 +117,7 @@ function proxyDownload($url) {
     echo $content;
     exit;
 }
+
 // Function to encode request data for the POST request
 function encodePostRequestData($shortcode) {
     $requestData = [
@@ -197,17 +271,11 @@ function downloadFile($url) {
     $fileContent = curl_exec($ch);
     curl_close($ch);
     return $fileContent;
-    // $fileContent = curl_exec($ch);
-    // curl_close($ch);
-    // return $fileContent;
 }
 
 // Function to download files and create ZIP
 function downloadAndCreateZip($mediaUrls) {
     $zip = new ZipArchive();
-    // $zipPath = 'api/downloads/' . uniqid('instagram_download_', true) . '.zip';
-
-    // $downloadsDir = __DIR__ . '/downloads/';
     $downloadsDir = __DIR__ . '/../downloads/'; // Adjust the path to go to the desired directory
 
     $zipPath = $downloadsDir . uniqid('instagram_download_', true) . '.zip';
@@ -215,20 +283,10 @@ function downloadAndCreateZip($mediaUrls) {
     if (!file_exists($downloadsDir)) {
         mkdir($downloadsDir, 0777, true);
     }
-    // Create the downloads directory if it doesn't exist
-    // if (!file_exists('api/downloads')) {
-    //     mkdir('api/downloads', 0777, true);
-    // }
-
     if ($zip->open($zipPath, ZipArchive::CREATE) !== TRUE) {
         return ['error' => 'Unable to create ZIP file'];
     }
 
-    // foreach ($mediaUrls as $media) {
-    //     $fileContent = file_get_contents($media['url']);
-    //     $fileName = basename($media['url']);
-    //     $zip->addFromString($fileName, $fileContent);
-    // }
      foreach ($mediaUrls as $index => $media) {
         $fileContent = downloadFile($media['url']);
         if ($fileContent) {
@@ -253,7 +311,6 @@ function downloadAndCreateZip($mediaUrls) {
     return ['zipFilePath' => $zipFileUrl];  // Only return 'zipFilePath' once
 }
 
-
 // Main handler function for API request
 if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['proxy_url'])) {
     proxyDownload($_GET['proxy_url']);
@@ -261,38 +318,59 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['proxy_url'])) {
     $input = json_decode(file_get_contents('php://input'), true);
     $postUrl = $input['postUrl'] ?? '';
 
-    $mediaInfo = fetchFromGraphQL($postUrl);
-
-    if (isset($mediaInfo['error'])) {
-        echo json_encode($mediaInfo);
+    if (!$postUrl) {
+        echo json_encode(['error' => 'URL is required']);
         exit;
     }
-  if ($mediaInfo['type'] === 'carousel') {
-    // Create a ZIP for carousel posts
-    $zipResult = downloadAndCreateZip($mediaInfo['media']);
+    $urlType = detectUrlType($postUrl);
     
-    // Make sure the response doesn't contain nested zipFilePath
-    if (isset($zipResult['zipFilePath'])) {
-        echo json_encode([
-            'zipFilePath' => $zipResult['zipFilePath'],  // Directly access zipFilePath
-        ]);
-    } else {
-        echo json_encode($zipResult);  // In case there's an error or missing zipFilePath
+    switch ($urlType) {
+        case 'instagram':
+            $mediaInfo = fetchFromGraphQL($postUrl);
+            
+            if (isset($mediaInfo['error'])) {
+                echo json_encode($mediaInfo);
+                exit;
+            }
+
+            if ($mediaInfo['type'] === 'carousel') {
+                $zipResult = downloadAndCreateZip($mediaInfo['media']);
+                echo json_encode([
+                    'platform' => 'instagram',
+                    'type' => 'carousel',
+                    'zipFilePath' => $zipResult['zipFilePath'] ?? null,
+                    'error' => $zipResult['error'] ?? null
+                ]);
+            } else {
+                echo json_encode([
+                    'platform' => 'instagram',
+                    'type' => $mediaInfo['type'],
+                    'fileUrl' => $mediaInfo['url'],
+                    'fileType' => $mediaInfo['type'] === "video" ? "mp4" : "jpg",
+                    'dimensions' => $mediaInfo['dimensions']
+                ]);
+            }
+            break;
+
+        case 'youtube':
+            $videoId = extractVideoId($postUrl);
+            if (!$videoId) {
+                echo json_encode(['error' => 'Invalid YouTube URL']);
+                exit;
+            }
+            
+            $videoInfo = fetchYoutubeVideoDetails($videoId);
+           
+            echo json_encode(array_merge(
+                ['platform' => 'youtube'],
+                $videoInfo
+            ));
+            break;
+
+        default:
+            echo json_encode(['error' => 'Unsupported URL type. Please provide an Instagram or YouTube Shorts URL']);
+            break;
     }
-    // if ($mediaInfo['type'] === 'carousel') {
-    //     // Return multiple media URLs
-    //     echo json_encode([
-    //         'mediaUrls' => $mediaInfo['media'],  // Multiple media URLs in an array
-    //     ]);
-} else {
-    echo json_encode([
-        'fileUrl' => $mediaInfo['url'],
-        'fileType' => $mediaInfo['type'] === "video" ? "mp4" : "jpg",
-        'dimensions' => $mediaInfo['dimensions'],
-    ]);
-}
-
-
 } else {
     echo json_encode(['error' => 'Method Not Allowed']);
     exit;
