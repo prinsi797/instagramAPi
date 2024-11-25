@@ -25,6 +25,8 @@ function detectUrlType($url) {
         return 'instagram';
     } elseif (strpos($url, 'youtube.com/shorts') !== false || strpos($url, 'youtu.be') !== false || strpos($url, 'youtube.com/watch?v=') !== false) {
         return 'youtube';
+    } else if (strpos($url, 'https://snapchat.com') !== false){
+        return 'snapchat';
     }
     return 'unknown';
 }
@@ -64,7 +66,7 @@ function fetchYoutubeVideoDetails($videoId) {
         CURLOPT_CUSTOMREQUEST => "GET",
         CURLOPT_HTTPHEADER => [
             "x-rapidapi-host: youtube-media-downloader.p.rapidapi.com",
-            "x-rapidapi-key: 9da3e28b24mshe036d02fec5c810p112321jsn4f98d6601eb5" // अपनी RapidAPI कुंजी यहाँ डालें
+            "x-rapidapi-key: 9da3e28b24mshe036d02fec5c810p112321jsn4f98d6601eb5" // RapidAPI Key
         ],
     ]);
 
@@ -77,8 +79,7 @@ function fetchYoutubeVideoDetails($videoId) {
         return ["error" => true, "message" => "cURL Error: " . $err];
     }
 
-    // कच्ची प्रतिक्रिया को लॉग करें
-    error_log("Raw API Response: " . $response); // कच्ची प्रतिक्रिया लॉग करें
+    error_log("Raw API Response: " . $response); 
 
     $decodedResponse = json_decode($response, true);
 
@@ -97,6 +98,52 @@ function fetchYoutubeVideoDetails($videoId) {
         ]
     ];
 }
+
+// snap code 
+
+function scrapeVideoDetails($videoUrl)
+{
+
+    // Initialize cURL
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $videoUrl);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false); // Disable SSL host verification
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false); // Disable SSL peer verification
+    curl_setopt($ch, CURLOPT_USERAGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36");
+
+    $response = curl_exec($ch);
+
+    if (curl_errno($ch)) {
+        throw new Exception("cURL error: " . curl_error($ch));
+    }
+
+    curl_close($ch);
+
+    // Parse the HTML response using DOMDocument
+    $dom = new DOMDocument();
+    libxml_use_internal_errors(true);
+    $dom->loadHTML($response);
+    libxml_clear_errors();
+
+    $xpath = new DOMXPath($dom);
+
+    // Extract metadata
+    $videoElement = $xpath->query("//video/source");
+    $thumbnailMeta = $xpath->query("//meta[@property='og:image']");
+
+    $videoDownloadUrl = $videoElement->length > 0 ? $videoElement->item(0)->getAttribute('src') : null;
+    $thumbnail = $thumbnailMeta->length > 0 ? $thumbnailMeta->item(0)->getAttribute('content') : null;
+
+    return [
+        "videoDownloadUrl" => $videoDownloadUrl,
+        "thumbnail" => $thumbnail,
+        "title" => $dom->getElementsByTagName("title")->item(0)->textContent ?? "No Title Found"
+    ];
+}
+
+
 function proxyDownload($url) {
     $ch = curl_init($url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
@@ -370,6 +417,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['proxy_url'])) {
         default:
             echo json_encode(['error' => 'Unsupported URL type. Please provide an Instagram or YouTube Shorts URL']);
             break;
+            
+        case 'snapchat':
+            $videoDetails = scrapeVideoDetails($postUrl);
+            
+            // echo json_encode(array_merge(
+            //     ['platform' => 'snapchat'],
+            //     $videoDetails
+            // ));
+            
+          if (!$videoDetails['videoDownloadUrl']) {
+        http_response_code(404);
+        echo json_encode(["error" => "Video not found or inaccessible."]);
+        exit;
+    }
+
+    echo json_encode([
+        "success" => true,
+        "platform" => "snapchat",
+        "data" => $videoDetails
+    ]);
+           
     }
 } else {
     echo json_encode(['error' => 'Method Not Allowed']);
